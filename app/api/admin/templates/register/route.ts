@@ -5,9 +5,26 @@ export async function POST(request: NextRequest) {
   try {
     // 관리자 인증 확인
     const adminSecret = request.headers.get('x-admin-secret');
-    if (adminSecret !== process.env.ADMIN_SECRET_KEY) {
+    const envSecret = process.env.ADMIN_SECRET_KEY;
+
+    // 디버깅 로그
+    console.log('[DEBUG] Header secret exists:', !!adminSecret);
+    console.log('[DEBUG] Header secret length:', adminSecret?.length || 0);
+    console.log('[DEBUG] Env secret exists:', !!envSecret);
+    console.log('[DEBUG] Env secret length:', envSecret?.length || 0);
+    console.log('[DEBUG] Secrets match:', adminSecret === envSecret);
+
+    if (adminSecret !== envSecret) {
       return NextResponse.json(
-        { error: '관리자 권한이 필요합니다.' },
+        {
+          error: '관리자 권한이 필요합니다.',
+          debug: {
+            hasHeader: !!adminSecret,
+            hasEnv: !!envSecret,
+            headerLength: adminSecret?.length || 0,
+            envLength: envSecret?.length || 0
+          }
+        },
         { status: 401 }
       );
     }
