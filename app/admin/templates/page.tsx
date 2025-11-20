@@ -40,28 +40,11 @@ export default function AdminTemplatesPage() {
   const [editSlidesCount, setEditSlidesCount] = useState('');
   const [editFile, setEditFile] = useState<File | null>(null);
 
-  // 환경변수에서 관리자 비밀키 가져오기
-  const adminSecret = process.env.NEXT_PUBLIC_ADMIN_SECRET;
-
-  // 디버깅: 클라이언트에서 사용하는 secret 확인
-  console.log('[CLIENT DEBUG] Admin secret from env:', process.env.NEXT_PUBLIC_ADMIN_SECRET);
-  console.log('[CLIENT DEBUG] Admin secret value:', adminSecret);
-  console.log('[CLIENT DEBUG] Admin secret length:', adminSecret?.length);
-  console.log('[CLIENT DEBUG] Admin secret type:', typeof adminSecret);
-
-  if (!adminSecret) {
-    console.error('[CLIENT ERROR] NEXT_PUBLIC_ADMIN_SECRET is not set!');
-  }
-
   // 템플릿 목록 조회
   const fetchTemplates = async () => {
     try {
       setLoading(true);
-      const response = await fetch('/api/admin/templates', {
-        headers: {
-          'x-admin-secret': adminSecret || '',
-        },
-      });
+      const response = await fetch('/api/admin/templates');
 
       if (response.ok) {
         const data = await response.json();
@@ -121,7 +104,6 @@ export default function AdminTemplatesPage() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-secret': adminSecret || '',
         },
         body: JSON.stringify({
           title,
@@ -221,7 +203,6 @@ export default function AdminTemplatesPage() {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-secret': adminSecret || '',
         },
         body: JSON.stringify({
           title: editTitle,
@@ -296,7 +277,6 @@ export default function AdminTemplatesPage() {
             method: 'PUT',
             headers: {
               'Content-Type': 'application/json',
-              'x-admin-secret': adminSecret || '',
             },
             body: JSON.stringify({
               title: template.title,
@@ -332,9 +312,6 @@ export default function AdminTemplatesPage() {
     try {
       const response = await fetch(`/api/admin/templates?id=${templateId}`, {
         method: 'DELETE',
-        headers: {
-          'x-admin-secret': adminSecret || '',
-        },
       });
 
       if (response.ok) {

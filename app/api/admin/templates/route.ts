@@ -4,15 +4,6 @@ import { createServerClient } from '@/lib/supabase/server';
 // 모든 템플릿 조회 (관리자용)
 export async function GET(request: NextRequest) {
   try {
-    // 관리자 인증 확인
-    const adminSecret = request.headers.get('x-admin-secret');
-    if (adminSecret !== process.env.ADMIN_SECRET_KEY) {
-      return NextResponse.json(
-        { error: '관리자 권한이 필요합니다.' },
-        { status: 401 }
-      );
-    }
-
     const supabase = createServerClient();
 
     const { data, error } = await supabase
@@ -42,15 +33,6 @@ export async function GET(request: NextRequest) {
 // 템플릿 수정
 export async function PUT(request: NextRequest) {
   try {
-    // 관리자 인증 확인
-    const adminSecret = request.headers.get('x-admin-secret');
-    if (adminSecret !== process.env.ADMIN_SECRET_KEY) {
-      return NextResponse.json(
-        { error: '관리자 권한이 필요합니다.' },
-        { status: 401 }
-      );
-    }
-
     const { searchParams } = new URL(request.url);
     const templateId = searchParams.get('id');
 
@@ -119,15 +101,6 @@ export async function PUT(request: NextRequest) {
 // 템플릿 삭제
 export async function DELETE(request: NextRequest) {
   try {
-    // 관리자 인증 확인
-    const adminSecret = request.headers.get('x-admin-secret');
-    if (adminSecret !== process.env.ADMIN_SECRET_KEY) {
-      return NextResponse.json(
-        { error: '관리자 권한이 필요합니다.' },
-        { status: 401 }
-      );
-    }
-
     const { searchParams } = new URL(request.url);
     const templateId = searchParams.get('id');
 
