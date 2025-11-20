@@ -43,6 +43,11 @@ export default function AdminTemplatesPage() {
   // 환경변수에서 관리자 비밀키 가져오기
   const adminSecret = process.env.NEXT_PUBLIC_ADMIN_SECRET || 'your-random-secret-key-change-this';
 
+  // 디버깅: 클라이언트에서 사용하는 secret 확인
+  console.log('[CLIENT DEBUG] Admin secret from env:', process.env.NEXT_PUBLIC_ADMIN_SECRET);
+  console.log('[CLIENT DEBUG] Admin secret being used:', adminSecret);
+  console.log('[CLIENT DEBUG] Admin secret length:', adminSecret.length);
+
   // 템플릿 목록 조회
   const fetchTemplates = async () => {
     try {
