@@ -61,142 +61,52 @@ export async function PUT(request: NextRequest) {
       );
     }
 
-    const contentType = request.headers.get('content-type');
     const supabase = createServerClient();
+    const body = await request.json();
+    const { title, description, category, slides_count, display_order, file_path } = body;
 
-    // FormData (파일 업로드 포함) vs JSON (메타데이터만)
-    if (contentType?.includes('multipart/form-data')) {
-      // 파일 업로드 포함 수정
-      const formData = await request.formData();
-      const file = formData.get('file') as File;
-      const title = formData.get('title') as string;
-      const description = formData.get('description') as string;
-      const category = formData.get('category') as string;
-      const slidesCount = formData.get('slidesCount') as string;
-      const displayOrder = formData.get('displayOrder') as string;
-
-      if (!file || !title || !description || !category || !slidesCount) {
-        return NextResponse.json(
-          { error: '모든 필드를 입력해주세요.' },
-          { status: 400 }
-        );
-      }
-
-      // 기존 템플릿 정보 조회
-      const { data: existingTemplate, error: fetchError } = await supabase
-        .from('templates')
-        .select('file_path')
-        .eq('id', templateId)
-        .single();
-
-      if (fetchError || !existingTemplate) {
-        return NextResponse.json(
-          { error: '템플릿을 찾을 수 없습니다.' },
-          { status: 404 }
-        );
-      }
-
-      // 새 파일 업로드 (안전한 파일명 생성)
-      const timestamp = Date.now();
-      const randomId = Math.random().toString(36).substring(2, 15);
-      const fileName = `${timestamp}-${randomId}.pptx`;
-
-      const fileBuffer = await file.arrayBuffer();
-      const { data: uploadData, error: uploadError } = await supabase.storage
-        .from('templates')
-        .upload(fileName, fileBuffer, {
-          contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
-        });
-
-      if (uploadError) {
-        console.error('File upload error:', uploadError);
-        return NextResponse.json(
-          { error: '파일 업로드에 실패했습니다.', details: uploadError.message },
-          { status: 500 }
-        );
-      }
-
-      // 데이터베이스 업데이트
-      const updateData: any = {
-        title,
-        description,
-        category,
-        slides_count: parseInt(slidesCount, 10),
-        file_path: fileName,
-        updated_at: new Date().toISOString(),
-      };
-
-      // display_order가 있으면 추가 (컬럼이 존재하는 경우에만)
-      if (displayOrder) {
-        updateData.display_order = parseInt(displayOrder, 10);
-      }
-
-      const { data, error } = await supabase
-        .from('templates')
-        .update(updateData)
-        .eq('id', templateId)
-        .select()
-        .single();
-
-      if (error) {
-        console.error('Database update error:', error);
-        // 업로드한 새 파일 삭제
-        await supabase.storage.from('templates').remove([fileName]);
-        return NextResponse.json(
-          { error: '템플릿 수정에 실패했습니다.' },
-          { status: 500 }
-        );
-      }
-
-      // 기존 파일 삭제
-      if (existingTemplate.file_path) {
-        await supabase.storage.from('templates').remove([existingTemplate.file_path]);
-      }
-
-      return NextResponse.json({ success: true, template: data });
-    } else {
-      // 메타데이터만 수정 (파일 교체 없음)
-      const body = await request.json();
-      const { title, description, category, slides_count, display_order } = body;
-
-      if (!title || !description || !category || !slides_count) {
-        return NextResponse.json(
-          { error: '모든 필드를 입력해주세요.' },
-          { status: 400 }
-        );
-      }
-
-      // 템플릿 업데이트
-      const updateData: any = {
-        title,
-        description,
-        category,
-        slides_count: parseInt(slides_count, 10),
-        updated_at: new Date().toISOString(),
-      };
-
-      // display_order가 있으면 추가 (컬럼이 존재하는 경우에만)
-      if (display_order !== undefined && display_order !== null) {
-        updateData.display_order = parseInt(display_order, 10);
-      }
-
-      const { data, error } = await supabase
-        .from('templates')
-        .update(updateData)
-        .eq('id', templateId)
-        .select()
-        .single();
-
-      if (error) {
-        console.error('Database update error:', error);
-        return NextResponse.json(
-          { error: '템플릿 수정에 실패했습니다.', details: error.message, code: error.code },
-          { status: 500 }
-        );
-      }
-
-      return NextResponse.json({ success: true, template: data });
+    if (!title || !description || !category || !slides_count) {
+      return NextResponse.json(
+        { error: '모든 필드를 입력해주세요.' },
+        { status: 400 }
+      );
     }
+
+    // 템플릿 업데이트
+    const updateData: any = {
+      title,
+      description,
+      category,
+      slides_count: parseInt(slides_count, 10),
+      updated_at: new Date().toISOString(),
+    };
+
+    // file_path가 있으면 추가
+    if (file_path) {
+      updateData.file_path = file_path;
+    }
+
+    // display_order가 있으면 추가
+    if (display_order !== undefined && display_order !== null) {
+      updateData.display_order = parseInt(display_order, 10);
+    }
+
+    const { data, error } = await supabase
+      .from('templates')
+      .update(updateData)
+      .eq('id', templateId)
+      .select()
+      .single();
+
+    if (error) {
+      console.error('Database update error:', error);
+      return NextResponse.json(
+        { error: '템플릿 수정에 실패했습니다.', details: error.message, code: error.code },
+        { status: 500 }
+      );
+    }
+
+    return NextResponse.json({ success: true, template: data });
   } catch (error) {
     console.error('Template update error:', error);
     return NextResponse.json(

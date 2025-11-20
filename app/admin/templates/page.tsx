@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { Upload, Trash2, FileText, Edit2, X, ChevronUp, ChevronDown } from 'lucide-react';
 import toast, { Toaster } from 'react-hot-toast';
+import { supabase } from '@/lib/supabase/client';
 
 interface Template {
   id: string;
@@ -71,7 +72,7 @@ export default function AdminTemplatesPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // 템플릿 업로드
+  // 템플릿 업로드 (Supabase Storage로 직접 업로드)
   const handleUpload = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -80,26 +81,49 @@ export default function AdminTemplatesPage() {
       return;
     }
 
+    const uploadToast = toast.loading('파일 업로드 중...');
     try {
       setUploading(true);
 
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('title', title);
-      formData.append('description', description);
-      formData.append('category', category);
-      formData.append('slidesCount', slidesCount);
+      // 1단계: Supabase Storage에 파일 직접 업로드
 
-      const response = await fetch('/api/admin/templates/upload', {
+      const timestamp = Date.now();
+      const randomId = Math.random().toString(36).substring(2, 15);
+      const fileName = `${timestamp}-${randomId}.pptx`;
+
+      const { data: uploadData, error: uploadError } = await supabase.storage
+        .from('templates')
+        .upload(fileName, file, {
+          contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+          upsert: false,
+        });
+
+      if (uploadError) {
+        console.error('Storage upload error:', uploadError);
+        toast.error('파일 업로드에 실패했습니다: ' + uploadError.message, { id: uploadToast });
+        return;
+      }
+
+      toast.loading('템플릿 정보 저장 중...', { id: uploadToast });
+
+      // 2단계: 데이터베이스에 템플릿 정보 저장
+      const response = await fetch('/api/admin/templates/register', {
         method: 'POST',
         headers: {
+          'Content-Type': 'application/json',
           'x-admin-secret': adminSecret,
         },
-        body: formData,
+        body: JSON.stringify({
+          title,
+          description,
+          category,
+          slides_count: parseInt(slidesCount, 10),
+          file_path: uploadData.path,
+        }),
       });
 
       if (response.ok) {
-        toast.success('템플릿이 성공적으로 업로드되었습니다.');
+        toast.success('템플릿이 성공적으로 업로드되었습니다.', { id: uploadToast });
         // 폼 초기화
         setTitle('');
         setDescription('');
@@ -113,15 +137,15 @@ export default function AdminTemplatesPage() {
         fetchTemplates();
       } else {
         const data = await response.json();
-        const errorMsg = data.error || '업로드에 실패했습니다.';
-        toast.error(errorMsg);
-        if (data.details) {
-          console.error('Upload failed:', data);
-        }
+        const errorMsg = data.error || '템플릿 정보 저장에 실패했습니다.';
+        toast.error(errorMsg, { id: uploadToast });
+
+        // 실패 시 업로드된 파일 삭제
+        await supabase.storage.from('templates').remove([fileName]);
       }
     } catch (error) {
       console.error('Upload error:', error);
-      toast.error('업로드 중 오류가 발생했습니다.');
+      toast.error('업로드 중 오류가 발생했습니다.', { id: uploadToast });
     } finally {
       setUploading(false);
     }
@@ -138,7 +162,7 @@ export default function AdminTemplatesPage() {
     setIsEditModalOpen(true);
   };
 
-  // 템플릿 수정 저장
+  // 템플릿 수정 저장 (Supabase Storage로 직접 업로드)
   const handleUpdate = async (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -149,57 +173,64 @@ export default function AdminTemplatesPage() {
 
     const loadingToast = toast.loading('수정 중...');
     try {
-      // 파일이 있는 경우 FormData 사용, 없는 경우 JSON 사용
+      let filePath = editingTemplate.file_path;
+
+      // 파일이 있는 경우 Supabase Storage에 직접 업로드
       if (editFile) {
-        const formData = new FormData();
-        formData.append('file', editFile);
-        formData.append('title', editTitle);
-        formData.append('description', editDescription);
-        formData.append('category', editCategory);
-        formData.append('slidesCount', editSlidesCount);
+        toast.loading('파일 업로드 중...', { id: loadingToast });
 
-        const response = await fetch(`/api/admin/templates?id=${editingTemplate.id}`, {
-          method: 'PUT',
-          headers: {
-            'x-admin-secret': adminSecret,
-          },
-          body: formData,
-        });
+        const timestamp = Date.now();
+        const randomId = Math.random().toString(36).substring(2, 15);
+        const fileName = `${timestamp}-${randomId}.pptx`;
 
-        if (response.ok) {
-          toast.success('템플릿이 수정되었습니다.', { id: loadingToast });
-          setIsEditModalOpen(false);
-          setEditingTemplate(null);
-          setEditFile(null);
-          fetchTemplates();
-        } else {
-          const data = await response.json();
-          toast.error(data.error || '수정에 실패했습니다.', { id: loadingToast });
+        const { data: uploadData, error: uploadError } = await supabase.storage
+          .from('templates')
+          .upload(fileName, editFile, {
+            contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+            upsert: false,
+          });
+
+        if (uploadError) {
+          console.error('Storage upload error:', uploadError);
+          toast.error('파일 업로드에 실패했습니다: ' + uploadError.message, { id: loadingToast });
+          return;
         }
+
+        // 기존 파일 삭제
+        if (editingTemplate.file_path) {
+          await supabase.storage.from('templates').remove([editingTemplate.file_path]);
+        }
+
+        filePath = uploadData.path;
+      }
+
+      toast.loading('템플릿 정보 저장 중...', { id: loadingToast });
+
+      // 데이터베이스 업데이트
+      const response = await fetch(`/api/admin/templates?id=${editingTemplate.id}`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-admin-secret': adminSecret,
+        },
+        body: JSON.stringify({
+          title: editTitle,
+          description: editDescription,
+          category: editCategory,
+          slides_count: parseInt(editSlidesCount, 10),
+          file_path: filePath,
+        }),
+      });
+
+      if (response.ok) {
+        toast.success('템플릿이 수정되었습니다.', { id: loadingToast });
+        setIsEditModalOpen(false);
+        setEditingTemplate(null);
+        setEditFile(null);
+        fetchTemplates();
       } else {
-        const response = await fetch(`/api/admin/templates?id=${editingTemplate.id}`, {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            'x-admin-secret': adminSecret,
-          },
-          body: JSON.stringify({
-            title: editTitle,
-            description: editDescription,
-            category: editCategory,
-            slides_count: parseInt(editSlidesCount, 10),
-          }),
-        });
-
-        if (response.ok) {
-          toast.success('템플릿이 수정되었습니다.', { id: loadingToast });
-          setIsEditModalOpen(false);
-          setEditingTemplate(null);
-          fetchTemplates();
-        } else {
-          const data = await response.json();
-          toast.error(data.error || '수정에 실패했습니다.', { id: loadingToast });
-        }
+        const data = await response.json();
+        toast.error(data.error || '수정에 실패했습니다.', { id: loadingToast });
       }
     } catch (error) {
       console.error('Update error:', error);
