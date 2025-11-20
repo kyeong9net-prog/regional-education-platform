@@ -14,8 +14,8 @@ export default function MobileMenu() {
   const closeMenu = () => setIsOpen(false);
 
   const mainNav = [
-    { href: '/', label: '교사 모드', isActive: !isAdminMode },
-    { href: '/admin/templates', label: '관리자 모드', isActive: isAdminMode },
+    { href: '/', label: '자료생성', isActive: !isAdminMode },
+    { href: '/admin/templates', label: '템플릿 공유 모드', isActive: isAdminMode },
   ];
 
   const sideNav = [

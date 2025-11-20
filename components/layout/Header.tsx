@@ -31,7 +31,7 @@ export default function Header() {
               }`}
               aria-current={!isAdminMode ? 'page' : undefined}
             >
-              교사 모드
+              자료생성
             </Link>
             <Link
               href="/admin/templates"
