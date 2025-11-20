@@ -1,0 +1,132 @@
+{
+  "templateId": "086e08d4-efee-45e7-8b4b-04c3491e8be2",
+  "templateTitle": "지역의 여러장소 알아보기",
+  "templateFilePath": "1762087115322-dxmv4w.pptx",
+  "analyzedAt": "2025-11-02T12:50:56.131Z",
+  "totalSlides": 11,
+  "placeholders": [
+    {
+      "slideNumber": 2,
+      "slideFile": "ppt/slides/slide2.xml",
+      "imageIndex": 37,
+      "imageId": "22",
+      "imageName": "그림 21",
+      "placeholder": "{{NATURAL_SITE_IMAGE_1}}",
+      "type": "IMAGE",
+      "category": "NATURAL_SITE",
+      "index": 1,
+      "pattern": "{{NATURAL_SITE_IMAGE_1}}",
+      "rawText": "NATURAL_SITE_IMAGE_1",
+      "imageSize": {
+        "width": 5842000,
+        "height": 3099366,
+        "area": 18106496172000
+      }
+    },
+    {
+      "slideNumber": 2,
+      "slideFile": "ppt/slides/slide2.xml",
+      "imageIndex": 38,
+      "imageId": "56",
+      "imageName": "그림 55",
+      "placeholder": "{{NATURAL_SITE_IMAGE_2}}",
+      "type": "IMAGE",
+      "category": "NATURAL_SITE",
+      "index": 2,
+      "pattern": "{{NATURAL_SITE_IMAGE_2}}",
+      "rawText": "NATURAL_SITE_IMAGE_2",
+      "imageSize": {
+        "width": 5842000,
+        "height": 3099366,
+        "area": 18106496172000
+      }
+    },
+    {
+      "slideNumber": 2,
+      "slideFile": "ppt/slides/slide2.xml",
+      "imageIndex": 39,
+      "imageId": "59",
+      "imageName": "그림 58",
+      "placeholder": "{{EDU_SITE_IMAGE_1}}",
+      "type": "IMAGE",
+      "category": "EDU_SITE",
+      "index": 1,
+      "pattern": "{{EDU_SITE_IMAGE_1}}",
+      "rawText": "EDU_SITE_IMAGE_1",
+      "imageSize": {
+        "width": 5842000,
+        "height": 3099366,
+        "area": 18106496172000
+      }
+    },
+    {
+      "slideNumber": 2,
+      "slideFile": "ppt/slides/slide2.xml",
+      "imageIndex": 40,
+      "imageId": "60",
+      "imageName": "그림 59",
+      "placeholder": "{{EDU_SITE_IMAGE_2}}",
+      "type": "IMAGE",
+      "category": "EDU_SITE",
+      "index": 2,
+      "pattern": "{{EDU_SITE_IMAGE_2}}",
+      "rawText": "EDU_SITE_IMAGE_2",
+      "imageSize": {
+        "width": 5842000,
+        "height": 3099366,
+        "area": 18106496172000
+      }
+    },
+    {
+      "slideNumber": 2,
+      "slideFile": "ppt/slides/slide2.xml",
+      "imageIndex": 41,
+      "imageId": "62",
+      "imageName": "그림 61",
+      "placeholder": "{{HISTORICAL_SITE_IMAGE_1}}",
+      "type": "IMAGE",
+      "category": "HISTORICAL_SITE",
+      "index": 1,
+      "pattern": "{{HISTORICAL_SITE_IMAGE_1}}",
+      "rawText": "HISTORICAL_SITE_IMAGE_1",
+      "imageSize": {
+        "width": 5842000,
+        "height": 3099366,
+        "area": 18106496172000
+      }
+    },
+    {
+      "slideNumber": 2,
+      "slideFile": "ppt/slides/slide2.xml",
+      "imageIndex": 42,
+      "imageId": "63",
+      "imageName": "그림 62",
+      "placeholder": "{{HISTOIRCAL_SITE_IMAGE_2}}",
+      "type": "IMAGE",
+      "category": "HISTOIRCAL_SITE",
+      "index": 2,
+      "pattern": "{{HISTOIRCAL_SITE_IMAGE_2}}",
+      "rawText": "HISTOIRCAL_SITE_IMAGE_2",
+      "imageSize": {
+        "width": 5842000,
+        "height": 3099366,
+        "area": 18106496172000
+      }
+    }
+  ],
+  "summary": {
+    "totalPlaceholders": 6,
+    "placeholdersByType": {
+      "IMAGE": 6
+    },
+    "placeholdersByCategory": {
+      "NATURAL_SITE": 2,
+      "EDU_SITE": 2,
+      "HISTORICAL_SITE": 1,
+      "HISTOIRCAL_SITE": 1
+    },
+    "placeholdersBySlide": {
+      "slide2": 6
+    }
+  }
+}

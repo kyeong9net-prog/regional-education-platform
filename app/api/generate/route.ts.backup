@@ -1,0 +1,914 @@
+import { NextRequest, NextResponse } from 'next/server';
+import { createServerClient } from '@/lib/supabase/server';
+import PizZip from 'pizzip';
+
+/**
+ * PowerPoint XML에서 placeholder를 치환하는 함수
+ * 분리된 태그도 처리: {{ | REGION}} 같은 경우
+ */
+function replacePlaceholdersInXML(
+  xmlContent: string,
+  replacements: { [key: string]: string }
+): string {
+  let result = xmlContent;
+  let foundCount = 0;
+
+  // 모든 placeholder를 순회
+  for (const [placeholder, value] of Object.entries(replacements)) {
+    // 이미지 placeholder는 건너뛰기 (descr 속성에서 사용되므로)
+    if (placeholder.includes('_IMAGE_')) {
+      continue;
+    }
+
+    // 1. 단순 치환 시도 (분리되지 않은 경우)
+    if (result.includes(placeholder)) {
+      console.log(`[XML Replace] ✓ Found intact "${placeholder}" → "${value}"`);
+      const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      result = result.replace(new RegExp(escapedPlaceholder, 'g'), value);
+      foundCount++;
+      continue;
+    }
+
+    // 2. 분리된 placeholder 처리
+    // <p:txBody> 블록 단위로 처리
+    const txBodyRegex = /<p:txBody[^>]*>([\s\S]*?)<\/p:txBody>/g;
+    let txBodyMatch;
+    const txBodyMatches = [];
+
+    while ((txBodyMatch = txBodyRegex.exec(result)) !== null) {
+      txBodyMatches.push({
+        fullMatch: txBodyMatch[0],
+        content: txBodyMatch[1],
+        index: txBodyMatch.index
+      });
+    }
+
+    for (const match of txBodyMatches) {
+      const txBody = match.fullMatch;
+      const txBodyContent = match.content;
+
+      // 모든 <a:t> 태그의 텍스트를 추출
+      const textParts: string[] = [];
+      const textRegex = /<a:t[^>]*>(.*?)<\/a:t>/g;
+      let textMatch;
+
+      while ((textMatch = textRegex.exec(txBodyContent)) !== null) {
+        textParts.push(textMatch[1]);
+      }
+
+      // 텍스트를 합쳐서 placeholder가 있는지 확인
+      const combinedText = textParts.join('');
+
+      if (combinedText.includes(placeholder)) {
+        console.log(`[XML Replace] ✓ Found split "${placeholder}" → "${value}"`);
+
+        // 치환된 텍스트
+        const escapedPlaceholder = placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const replacedText = combinedText.replace(new RegExp(escapedPlaceholder, 'g'), value);
+
+        // 첫 번째 <a:t> 태그에 전체 텍스트를 넣고, 나머지는 비우기
+        let isFirst = true;
+        const newTxBody = txBody.replace(/<a:t([^>]*)>(.*?)<\/a:t>/g, (_match: string, attrs: string) => {
+          if (isFirst) {
+            isFirst = false;
+            return `<a:t${attrs}>${replacedText}</a:t>`;
+          } else {
+            return `<a:t${attrs}></a:t>`;
+          }
+        });
+
+        result = result.replace(txBody, newTxBody);
+        foundCount++;
+      }
+    }
+  }
+
+  if (foundCount > 0) {
+    console.log(`[XML Replace] ✅ Successfully replaced ${foundCount} placeholders`);
+  } else {
+    console.log('[XML Replace] ⚠ No placeholders found in this slide');
+  }
+
+  return result;
+}
+
+/**
+ * 이미지 URL에서 이미지를 다운로드하여 Buffer로 반환
+ */
+async function downloadImage(url: string): Promise<Buffer | null> {
+  try {
+    console.log(`[Image Download] Fetching image from: ${url}`);
+    const response = await fetch(url);
+    if (!response.ok) {
+      console.error(`[Image Download] Failed to fetch image: ${response.status}`);
+      return null;
+    }
+    const arrayBuffer = await response.arrayBuffer();
+    return Buffer.from(arrayBuffer);
+  } catch (error) {
+    console.error('[Image Download] Error downloading image:', error);
+    return null;
+  }
+}
+
+/**
+ * PowerPoint에서 기존 이미지를 교체 - 개선된 버전
+ *
+ * 주요 개선사항:
+ * 1. 다양한 XML 네임스페이스 지원 (p:cNvPr, p14:cNvPr, a14:cNvPr 등)
+ * 2. descr 속성 찾기 전에 XML 디버깅 정보 출력
+ * 3. 실제 이미지 교체 로직 개선
+ */
+async function replaceExistingImages(
+  zip: PizZip,
+  slideFileName: string,
+  imageReplacements: { [key: string]: string }
+): Promise<boolean> {
+  try {
+    const slideContent = zip.file(slideFileName)?.asText() || '';
+    let modifiedContent = slideContent;
+    let modified = false;
+
+    // 디버깅: 슬라이드에 있는 cNvPr 태그 샘플 출력
+    const cNvPrSamples = slideContent.match(/<[^>]*cNvPr[^>]*>/g);
+    if (cNvPrSamples && cNvPrSamples.length > 0) {
+      console.log(`[Image Replace Debug] Found ${cNvPrSamples.length} cNvPr tags in ${slideFileName}`);
+      // 처음 3개만 출력
+      cNvPrSamples.slice(0, 3).forEach((tag, i) => {
+        console.log(`[Image Replace Debug] Sample ${i + 1}: ${tag}`);
+      });
+    }
+
+    // 개선된 정규식: 다양한 네임스페이스와 속성 순서 처리
+    // 1. p:cNvPr, p14:cNvPr, pic:cNvPr 등 다양한 네임스페이스 지원
+    // 2. descr 속성이 태그의 어느 위치에 있어도 찾을 수 있도록 개선
+    const imageDescRegex = /<[^:>]*:?cNvPr[^>]*\sdescr="([^"]*)"[^>]*>/gi;
+
+    // 또 다른 패턴: descr이 먼저 오는 경우
+    const imageDescRegex2 = /<[^:>]*:?cNvPr[^>]*descr="([^"]*)"[^>]*>/gi;
+
+    // title 속성에도 placeholder가 있을 수 있으므로 체크
+    const titleRegex = /<[^:>]*:?cNvPr[^>]*\stitle="([^"]*)"[^>]*>/gi;
+
+    let match;
+    const imagesToReplace: Array<{
+      placeholder: string;
+      imageUrl: string;
+      rId?: string;
+      originalTag: string;
+    }> = [];
+
+    // descr 속성에서 placeholder 찾기
+    console.log(`[Image Replace] Checking ${slideFileName} for descr attributes...`);
+    console.log(`[Image Replace] imageReplacements keys:`, Object.keys(imageReplacements));
+
+    while ((match = imageDescRegex.exec(slideContent)) !== null) {
+      const descr = match[1];
+      const originalTag = match[0];
+      console.log(`[Image Replace] Found descr="${descr}"`);
+
+      for (const [placeholder, imageUrl] of Object.entries(imageReplacements)) {
+        if (descr.includes(placeholder) && imageUrl) {
+          // rId 추출 시도
+          const rIdMatch = originalTag.match(/id="(\d+)"/);
+          imagesToReplace.push({
+            placeholder,
+            imageUrl,
+            rId: rIdMatch ? rIdMatch[1] : undefined,
+            originalTag
+          });
+          console.log(`[Image Replace] ✓ MATCHED descr="${descr}" with placeholder="${placeholder}"`);
+        }
+      }
+    }
+
+    // descr이 먼저 오는 패턴도 체크
+    imageDescRegex2.lastIndex = 0; // 정규식 리셋
+    while ((match = imageDescRegex2.exec(slideContent)) !== null) {
+      const descr = match[1];
+      const originalTag = match[0];
+
+      // 이미 찾은 것과 중복인지 체크
+      const isDuplicate = imagesToReplace.some(img => img.originalTag === originalTag);
+      if (!isDuplicate) {
+        for (const [placeholder, imageUrl] of Object.entries(imageReplacements)) {
+          if (descr.includes(placeholder) && imageUrl) {
+            const rIdMatch = originalTag.match(/id="(\d+)"/);
+            imagesToReplace.push({
+              placeholder,
+              imageUrl,
+              rId: rIdMatch ? rIdMatch[1] : undefined,
+              originalTag
+            });
+            console.log(`[Image Replace] ✓ Found image with descr="${descr}" (pattern 2) in ${slideFileName}`);
+          }
+        }
+      }
+    }
+
+    // title 속성에서도 placeholder 찾기
+    while ((match = titleRegex.exec(slideContent)) !== null) {
+      const title = match[1];
+      const originalTag = match[0];
+
+      // descr에서 이미 찾은 것과 중복인지 체크
+      const isDuplicate = imagesToReplace.some(img => img.originalTag === originalTag);
+      if (!isDuplicate) {
+        for (const [placeholder, imageUrl] of Object.entries(imageReplacements)) {
+          if (title.includes(placeholder) && imageUrl) {
+            const rIdMatch = originalTag.match(/id="(\d+)"/);
+            imagesToReplace.push({
+              placeholder,
+              imageUrl,
+              rId: rIdMatch ? rIdMatch[1] : undefined,
+              originalTag
+            });
+            console.log(`[Image Replace] ✓ Found image with title="${title}" in ${slideFileName}`);
+          }
+        }
+      }
+    }
+
+    if (imagesToReplace.length === 0) {
+      console.log(`[Image Replace] ⚠ No images with placeholders found in ${slideFileName}`);
+
+      // 디버깅: descr 속성이 있는지 확인
+      if (slideContent.includes('descr=')) {
+        console.log('[Image Replace Debug] descr attribute exists but no placeholders matched');
+        // descr 속성 값들을 출력
+        const descrValues = slideContent.match(/descr="([^"]*)"/g);
+        if (descrValues) {
+          console.log('[Image Replace Debug] Found descr values:', descrValues.slice(0, 5));
+        }
+      }
+
+      return false;
+    }
+
+    console.log(`[Image Replace] Found ${imagesToReplace.length} images to replace`);
+
+    // 슬라이드의 관계 파일 확인
+    const slideRelFileName = slideFileName.replace('ppt/slides/', 'ppt/slides/_rels/').replace('.xml', '.xml.rels');
+    const slideRelContent = zip.file(slideRelFileName)?.asText();
+
+    if (!slideRelContent) {
+      console.error(`[Image Replace] Relationship file not found: ${slideRelFileName}`);
+    }
+
+    // 각 이미지를 다운로드하고 교체
+    let imageCounter = 1;
+    for (const imageInfo of imagesToReplace) {
+      const { placeholder, imageUrl, rId } = imageInfo;
+      console.log(`[Image Replace] Processing ${placeholder} from ${imageUrl}`);
+
+      const imageBuffer = await downloadImage(imageUrl);
+      if (!imageBuffer) {
+        console.error(`[Image Replace] Failed to download image for ${placeholder}`);
+        continue;
+      }
+
+      // 이미지 확장자 결정
+      const imageExt = imageUrl.match(/\.(jpg|jpeg|png|gif)$/i)?.[1]?.toLowerCase() || 'jpg';
+
+      // 관계 파일에서 해당 이미지의 실제 경로 찾기
+      if (slideRelContent && rId) {
+        // 관계 파일에서 이미지 관계 찾기
+        const relPattern = new RegExp(`<Relationship[^>]*Id="rId${rId}"[^>]*Target="([^"]*)"[^>]*/>`, 'i');
+        const relMatch = slideRelContent.match(relPattern);
+
+        if (relMatch) {
+          const imagePath = relMatch[1].replace('../', 'ppt/');
+          console.log(`[Image Replace] Found image relationship: ${imagePath}`);
+
+          // 기존 이미지 파일 교체
+          zip.file(imagePath, imageBuffer);
+          modified = true;
+          console.log(`[Image Replace] ✓ Replaced ${imagePath} with new image`);
+        }
+      }
+
+      // 관계를 찾지 못한 경우, media 폴더의 이미지를 순차적으로 교체
+      if (!modified) {
+        const mediaFiles = Object.keys(zip.files).filter(name =>
+          name.startsWith('ppt/media/') && /\.(jpg|jpeg|png|gif)$/i.test(name)
+        ).sort();
+
+        if (mediaFiles.length >= imageCounter) {
+          // 순서대로 이미지 교체
+          const targetImagePath = mediaFiles[imageCounter - 1];
+          zip.file(targetImagePath, imageBuffer);
+          modified = true;
+          console.log(`[Image Replace] ✓ Replaced ${targetImagePath} (index: ${imageCounter}) with new image`);
+        } else {
+          // 새 이미지 추가
+          const newImagePath = `ppt/media/image${Date.now()}_${imageCounter}.${imageExt}`;
+          zip.file(newImagePath, imageBuffer);
+          modified = true;
+          console.log(`[Image Replace] ✓ Added new image to ${newImagePath}`);
+        }
+      }
+
+      imageCounter++;
+    }
+
+    // descr과 title 속성의 placeholder도 실제 값으로 치환
+    if (modified) {
+      for (const [placeholder, imageUrl] of Object.entries(imageReplacements)) {
+        if (imageUrl) {
+          // descr과 title 속성의 placeholder를 이미지 파일명으로 치환
+          const imageName = imageUrl.split('/').pop() || 'image';
+          modifiedContent = modifiedContent.replace(
+            new RegExp(placeholder.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'),
+            imageName
+          );
+        }
+      }
+
+      // 수정된 슬라이드 내용 저장
+      zip.file(slideFileName, modifiedContent);
+    }
+
+    return modified;
+  } catch (error) {
+    console.error(`[Image Replace] Error in ${slideFileName}:`, error);
+    return false;
+  }
+}
+
+/**
+ * 오래된 생성 기록 자동 정리
+ * 최근 20개만 유지하고 나머지는 삭제 (DB + Storage)
+ */
+async function cleanupOldGenerations(supabase: any) {
+  try {
+    // 1. 최근 20개를 제외한 오래된 레코드 조회
+    const { data: allRecords } = await supabase
+      .from('generation_requests')
+      .select('id, result_file_path, created_at')
+      .order('created_at', { ascending: false });
+
+    if (!allRecords || allRecords.length <= 20) {
+      // 20개 이하면 정리 필요 없음
+      return;
+    }
+
+    // 최근 20개를 제외한 나머지
+    const recordsToDelete = allRecords.slice(20);
+
+    console.log(`[Cleanup] Deleting ${recordsToDelete.length} old records...`);
+
+    // 2. Storage에서 파일 삭제
+    const filePaths = recordsToDelete
+      .map((r: any) => r.result_file_path)
+      .filter(Boolean);
+
+    if (filePaths.length > 0) {
+      const { error: storageError } = await supabase.storage
+        .from('templates')
+        .remove(filePaths);
+
+      if (storageError) {
+        console.error('[Cleanup] Storage delete error:', storageError);
+      } else {
+        console.log(`[Cleanup] Deleted ${filePaths.length} files from storage`);
+      }
+    }
+
+    // 3. 데이터베이스에서 레코드 삭제
+    const idsToDelete = recordsToDelete.map((r: any) => r.id);
+    const { error: dbError } = await supabase
+      .from('generation_requests')
+      .delete()
+      .in('id', idsToDelete);
+
+    if (dbError) {
+      console.error('[Cleanup] Database delete error:', dbError);
+    } else {
+      console.log(`[Cleanup] Deleted ${idsToDelete.length} records from database`);
+    }
+  } catch (error) {
+    console.error('[Cleanup] Cleanup error:', error);
+    // 정리 실패해도 생성은 계속 진행
+  }
+}
+
+/**
+ * PPT 생성 API
+ * POST /api/generate
+ */
+export async function POST(request: NextRequest) {
+  try {
+    const body = await request.json();
+    const { regionName, templateId, options } = body;
+
+    if (!templateId || !options || !regionName) {
+      return NextResponse.json(
+        { error: '필수 파라미터가 누락되었습니다.' },
+        { status: 400 }
+      );
+    }
+
+    const supabase = createServerClient();
+
+    // schoolName은 항상 "수업자료"로 고정
+    const SCHOOL_NAME = '수업자료';
+
+    // 1. 사용자가 선택한 지역명 사용 (단순 문자열)
+    console.log('[POST /api/generate] Region name:', regionName);
+    console.log('[POST /api/generate] Options:', options);
+    console.log('[POST /api/generate] School name (fixed):', SCHOOL_NAME);
+
+    // 2. 템플릿 정보 조회
+    const { data: template, error: templateError } = await supabase
+      .from('templates')
+      .select('*')
+      .eq('id', templateId)
+      .single();
+
+    if (templateError || !template) {
+      return NextResponse.json(
+        { error: '템플릿을 찾을 수 없습니다.' },
+        { status: 404 }
+      );
+    }
+
+    // 3. 템플릿 PPTX 파일 다운로드
+    // Signed URL을 사용하여 파일 다운로드 (Blob 변환 문제 회피)
+    const { data: signedUrlData, error: urlError } = await supabase.storage
+      .from('templates')
+      .createSignedUrl(template.file_path, 60); // 60초 유효
+
+    if (urlError || !signedUrlData) {
+      console.error('Signed URL creation error:', urlError);
+      return NextResponse.json(
+        { error: '템플릿 파일 URL 생성에 실패했습니다.' },
+        { status: 500 }
+      );
+    }
+
+    // 4. PPTX 파일 다운로드 및 Buffer로 변환
+    let templateBuffer: Buffer;
+    try {
+      const response = await fetch(signedUrlData.signedUrl);
+      if (!response.ok) {
+        throw new Error(`HTTP error! status: ${response.status}`);
+      }
+
+      const arrayBuffer = await response.arrayBuffer();
+      templateBuffer = Buffer.from(arrayBuffer);
+
+      console.log(`[POST /api/generate] Downloaded file size: ${templateBuffer.length} bytes`);
+
+      if (templateBuffer.length === 0) {
+        throw new Error('Downloaded file is empty');
+      }
+    } catch (error) {
+      console.error('[POST /api/generate] File download error:', error);
+      return NextResponse.json(
+        { error: '템플릿 파일 다운로드 중 오류가 발생했습니다.' },
+        { status: 500 }
+      );
+    }
+
+    let zip: PizZip;
+    try {
+      zip = new PizZip(templateBuffer);
+    } catch (error) {
+      console.error('[POST /api/generate] PizZip initialization error:', error);
+      return NextResponse.json(
+        { error: 'PPTX 파일이 손상되었거나 올바르지 않습니다.' },
+        { status: 500 }
+      );
+    }
+
+    // PPTX 내부 XML 파일들을 읽어서 텍스트 치환
+    const slideFiles = Object.keys(zip.files).filter(name =>
+      name.startsWith('ppt/slides/slide') && name.endsWith('.xml')
+    );
+
+    // 5. 한국관광공사 API에서 지역 관광지 정보 가져오기
+    let tourismData = null;
+    try {
+      const baseUrl = process.env.NEXT_PUBLIC_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+      const tourismResponse = await fetch(`${baseUrl}/api/tourism?region=${encodeURIComponent(regionName)}`);
+      if (tourismResponse.ok) {
+        tourismData = await tourismResponse.json();
+        console.log('[POST /api/generate] Tourism data fetched:', tourismData);
+      } else {
+        console.warn('[POST /api/generate] Tourism API failed, using sample data');
+      }
+    } catch (error) {
+      console.warn('[POST /api/generate] Tourism API error:', error);
+    }
+
+    // 관광지 데이터 추출 (API 실패 시 기본값 사용)
+    const naturalSite1 = tourismData?.naturalSpots?.[0]?.name || `${regionName} 자연명소 1`;
+    const naturalSite2 = tourismData?.naturalSpots?.[1]?.name || `${regionName} 자연명소 2`;
+    const eduSite1 = tourismData?.culturalSpots?.[0]?.name || `${regionName} 교육시설 1`;
+    const eduSite2 = tourismData?.culturalSpots?.[1]?.name || `${regionName} 교육시설 2`;
+    const historicalSite1 = tourismData?.historicalSpots?.[0]?.name || `${regionName} 역사유적 1`;
+    const historicalSite2 = tourismData?.historicalSpots?.[1]?.name || `${regionName} 역사유적 2`;
+
+    let naturalImage1 = tourismData?.naturalSpots?.[0]?.image || '';
+    let naturalImage2 = tourismData?.naturalSpots?.[1]?.image || '';
+    let eduImage1 = tourismData?.culturalSpots?.[0]?.image || '';
+    let eduImage2 = tourismData?.culturalSpots?.[1]?.image || '';
+    let historicalImage1 = tourismData?.historicalSpots?.[0]?.image || '';
+    let historicalImage2 = tourismData?.historicalSpots?.[1]?.image || '';
+
+    // Tourism API에서 이미지가 없으면 Unsplash → Pixabay 순서로 가져오기
+    const missingImages = [
+      !naturalImage1,
+      !naturalImage2,
+      !eduImage1,
+      !eduImage2,
+      !historicalImage1,
+      !historicalImage2,
+    ].filter(Boolean).length;
+
+    if (missingImages > 0) {
+      console.log(`[POST /api/generate] ${missingImages}개 이미지 누락, 외부 API에서 가져오기 시도...`);
+
+      const unsplashKey = process.env.UNSPLASH_ACCESS_KEY;
+      const pixabayKey = process.env.PIXABAY_API_KEY;
+
+      // 실제 관광지 이름을 사용하여 검색어 생성
+      const imageQueries = [
+        {
+          varName: 'naturalImage1',
+          query: `${naturalSite1} ${regionName}`,
+          fallback: `${regionName} nature landscape`
+        },
+        {
+          varName: 'naturalImage2',
+          query: `${naturalSite2} ${regionName}`,
+          fallback: `${regionName} mountain`
+        },
+        {
+          varName: 'eduImage1',
+          query: `${eduSite1} ${regionName}`,
+          fallback: `${regionName} museum`
+        },
+        {
+          varName: 'eduImage2',
+          query: `${eduSite2} ${regionName}`,
+          fallback: `${regionName} culture`
+        },
+        {
+          varName: 'historicalImage1',
+          query: `${historicalSite1} ${regionName}`,
+          fallback: `${regionName} temple`
+        },
+        {
+          varName: 'historicalImage2',
+          query: `${historicalSite2} ${regionName}`,
+          fallback: `${regionName} heritage`
+        },
+      ];
+
+      for (const { varName, query, fallback } of imageQueries) {
+        // 이미 이미지가 있으면 건너뛰기
+        let currentValue = '';
+        switch (varName) {
+          case 'naturalImage1': currentValue = naturalImage1; break;
+          case 'naturalImage2': currentValue = naturalImage2; break;
+          case 'eduImage1': currentValue = eduImage1; break;
+          case 'eduImage2': currentValue = eduImage2; break;
+          case 'historicalImage1': currentValue = historicalImage1; break;
+          case 'historicalImage2': currentValue = historicalImage2; break;
+        }
+        if (currentValue) continue;
+
+        let imageUrl = '';
+
+        // 1단계: Unsplash 시도 (지역명 포함)
+        if (unsplashKey && !imageUrl) {
+          try {
+            console.log(`[Image Fallback] ${varName}: Unsplash 시도 (query: "${query}")`);
+            const response = await fetch(
+              `https://api.unsplash.com/search/photos?query=${encodeURIComponent(query)}&per_page=1&orientation=landscape`,
+              { headers: { Authorization: `Client-ID ${unsplashKey}` } }
+            );
+
+            if (response.ok) {
+              const data = await response.json();
+              if (data.results && data.results.length > 0) {
+                imageUrl = data.results[0].urls.regular;
+                console.log(`[Unsplash] ✅ ${varName} 성공`);
+              } else {
+                console.log(`[Unsplash] ⚠ ${varName}: 검색 결과 없음`);
+              }
+            }
+          } catch (err) {
+            console.warn(`[Unsplash] ${varName} 오류:`, err);
+          }
+        }
+
+        // 2단계: Unsplash fallback (지역명 없이)
+        if (unsplashKey && !imageUrl) {
+          try {
+            console.log(`[Image Fallback] ${varName}: Unsplash fallback 시도 (query: "${fallback}")`);
+            const response = await fetch(
+              `https://api.unsplash.com/search/photos?query=${encodeURIComponent(fallback)}&per_page=1&orientation=landscape`,
+              { headers: { Authorization: `Client-ID ${unsplashKey}` } }
+            );
+
+            if (response.ok) {
+              const data = await response.json();
+              if (data.results && data.results.length > 0) {
+                imageUrl = data.results[0].urls.regular;
+                console.log(`[Unsplash Fallback] ✅ ${varName} 성공`);
+              }
+            }
+          } catch (err) {
+            console.warn(`[Unsplash Fallback] ${varName} 오류:`, err);
+          }
+        }
+
+        // 3단계: Pixabay 시도
+        if (pixabayKey && !imageUrl) {
+          try {
+            console.log(`[Image Fallback] ${varName}: Pixabay 시도 (query: "${fallback}")`);
+            const response = await fetch(
+              `https://pixabay.com/api/?key=${pixabayKey}&q=${encodeURIComponent(fallback)}&image_type=photo&per_page=3&orientation=horizontal`
+            );
+
+            if (response.ok) {
+              const data = await response.json();
+              if (data.hits && data.hits.length > 0) {
+                imageUrl = data.hits[0].largeImageURL;
+                console.log(`[Pixabay] ✅ ${varName} 성공`);
+              } else {
+                console.log(`[Pixabay] ⚠ ${varName}: 검색 결과 없음`);
+              }
+            }
+          } catch (err) {
+            console.warn(`[Pixabay] ${varName} 오류:`, err);
+          }
+        }
+
+        // 변수에 할당
+        if (imageUrl) {
+          switch (varName) {
+            case 'naturalImage1': naturalImage1 = imageUrl; break;
+            case 'naturalImage2': naturalImage2 = imageUrl; break;
+            case 'eduImage1': eduImage1 = imageUrl; break;
+            case 'eduImage2': eduImage2 = imageUrl; break;
+            case 'historicalImage1': historicalImage1 = imageUrl; break;
+            case 'historicalImage2': historicalImage2 = imageUrl; break;
+          }
+        } else {
+          console.warn(`[Image Fallback] ❌ ${varName}: 모든 API에서 이미지를 찾지 못함`);
+        }
+      }
+
+      console.log('[POST /api/generate] 이미지 fallback 완료');
+    }
+
+    // 치환할 텍스트 매핑 - {{영어대문자}} 형식만 사용
+    const replacements: { [key: string]: string } = {
+      // 기본 정보
+      '{{REGION}}': regionName,
+      '{{SCHOOL}}': SCHOOL_NAME,
+      '{{TITLE}}': template.title,
+      '{{DATE}}': new Date().toLocaleDateString('ko-KR'),
+
+      // 자연 명소
+      '{{NATURAL_SITE_1}}': naturalSite1,
+      '{{NATURAL_SITE_2}}': naturalSite2,
+      '{{NATURAL_SITE_1-1}}': naturalSite1, // 템플릿 추가 placeholder (자연명소 1 부제목)
+      '{{NATURAL_SITE_1_DESC}}': tourismData?.naturalSpots?.[0]?.address
+        || `${naturalSite1}의 아름다운 자연 경관`, // 템플릿 추가 placeholder (자연명소 1 설명)
+
+      // 교육/문화 시설
+      '{{EDU_SITE_1}}': eduSite1,
+      '{{EDU_SITE_2}}': eduSite2,
+
+      // 역사 명소
+      '{{HISTORICAL_SITE_1}}': historicalSite1,
+      '{{HISTORICAL_SITE_2}}': historicalSite2,
+      '{{HISTORI_SITE_1}}': historicalSite1, // 템플릿 오타 대응
+      '{{HISTORI_SITE_2}}': historicalSite2, // 템플릿 오타 대응
+    };
+
+    // 이미지 placeholder와 URL 매핑
+    const imageReplacements: { [key: string]: string } = {
+      '{{NATURAL_SITE_IMAGE_1}}': naturalImage1,
+      '{{NATURAL_SITE_IMAGE_2}}': naturalImage2,
+      '{{EDU_SITE_IMAGE_1}}': eduImage1,
+      '{{EDU_SITE_IMAGE_2}}': eduImage2,
+      '{{HISTORICAL_SITE_IMAGE_1}}': historicalImage1,
+      '{{HISTORICAL_SITE_IMAGE_2}}': historicalImage2,
+      '{{HISTOIRCAL_SITE_IMAGE_1}}': historicalImage1, // 오타 추가
+      '{{HISTOIRCAL_SITE_IMAGE_2}}': historicalImage2, // 템플릿 오타 대응
+    };
+
+    // 각 슬라이드 파일에서 텍스트 치환 (XML 파싱 방식 사용)
+    console.log(`[POST /api/generate] Processing ${slideFiles.length} slide files...`);
+    console.log('[POST /api/generate] Replacements:', replacements);
+    console.log('[POST /api/generate] Image URLs:', imageReplacements);
+
+    for (const fileName of slideFiles) {
+      try {
+        const content = zip.file(fileName)?.asText() || '';
+        console.log(`[POST /api/generate] Processing ${fileName}...`);
+
+        // 디버깅: XML 내용 샘플 출력
+        if (fileName.includes('slide2')) {
+          // slide2의 처음 2000자 출력
+          console.log('[POST /api/generate] Slide2 sample (first 2000 chars):', content.substring(0, 2000));
+        }
+
+        // 1. 템플릿에 있는 이미지를 실제 이미지로 교체 (텍스트 치환 전에 먼저 실행)
+        const imageReplaced = await replaceExistingImages(zip, fileName, imageReplacements);
+        if (imageReplaced) {
+          console.log(`[POST /api/generate] ✓ Images replaced in ${fileName}`);
+        }
+
+        // 2. XML 파싱을 통한 텍스트 placeholder 치환
+        const currentContent = zip.file(fileName)?.asText() || ''; // 이미지 교체 후 다시 읽기
+        const newContent = replacePlaceholdersInXML(currentContent, replacements);
+
+        if (newContent !== currentContent) {
+          zip.file(fileName, newContent);
+          console.log(`[POST /api/generate] ✓ Text placeholders replaced in ${fileName}`);
+        } else if (!imageReplaced) {
+          console.log(`[POST /api/generate] No changes in ${fileName}`);
+        }
+
+      } catch (error) {
+        console.error(`[POST /api/generate] Error processing ${fileName}:`, error);
+      }
+    }
+
+    // core.xml에서 메타데이터 수정
+    const coreXmlPath = 'docProps/core.xml';
+    if (zip.files[coreXmlPath]) {
+      let coreXml = zip.file(coreXmlPath)?.asText() || '';
+      coreXml = coreXml.replace(/<dc:title>.*?<\/dc:title>/, `<dc:title>${template.title} - ${regionName}</dc:title>`);
+      coreXml = coreXml.replace(/<dc:subject>.*?<\/dc:subject>/, `<dc:subject>${regionName} 지역화 수업자료</dc:subject>`);
+      coreXml = coreXml.replace(/<cp:keywords>.*?<\/cp:keywords>/, `<cp:keywords>${regionName}, ${SCHOOL_NAME}</cp:keywords>`);
+      zip.file(coreXmlPath, coreXml);
+    }
+
+    // 5. 수정된 PPTX를 Buffer로 변환
+    const pptxBuffer = zip.generate({
+      type: 'nodebuffer',
+      compression: 'DEFLATE'
+    });
+
+    // 6. 생성된 파일을 Supabase Storage에 업로드
+    const timestamp = Date.now();
+    const randomId = Math.random().toString(36).substring(2, 15);
+    const fileName = `generated/${timestamp}-${randomId}.pptx`;
+
+    const { data: uploadData, error: uploadError } = await supabase.storage
+      .from('templates')
+      .upload(fileName, pptxBuffer, {
+        contentType: 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        upsert: false,
+      });
+
+    if (uploadError) {
+      console.error('File upload error:', uploadError);
+      return NextResponse.json(
+        { error: '생성된 파일 업로드에 실패했습니다.' },
+        { status: 500 }
+      );
+    }
+
+    // 7. 생성 기록을 데이터베이스에 저장 (UUID 생성)
+    const { data: jobData, error: jobError } = await supabase
+      .rpc('uuid_generate_v4')
+      .single();
+
+    const jobId = jobData || crypto.randomUUID();
+
+    console.log('[POST /api/generate] Generated jobId:', jobId);
+    console.log('[POST /api/generate] Inserting record with:', {
+      id: jobId,
+      region_id: null,
+      template_id: templateId,
+      result_file_path: fileName,
+      status: 'completed',
+    });
+
+    const { error: recordError } = await supabase
+      .from('generation_requests')
+      .insert({
+        id: jobId,
+        region_id: null, // region_id는 NULL로 설정 (더미 데이터 호환)
+        template_id: templateId,
+        options: {
+          regionName: regionName, // 지역명만 저장 (표시 및 파일명용)
+          schoolName: SCHOOL_NAME,
+          photoStyle: options.photoStyle,
+          slideCount: options.slideCount,
+        },
+        result_file_path: fileName,
+        status: 'completed',
+        completed_at: new Date().toISOString(),
+      });
+
+    if (recordError) {
+      console.error('[POST /api/generate] Record insert error:', recordError);
+      // 에러가 발생해도 파일은 생성되었으므로 계속 진행
+    } else {
+      console.log('[POST /api/generate] Record inserted successfully, jobId:', jobId);
+    }
+
+    // 8. 오래된 생성 기록 자동 정리 (최근 20개만 유지)
+    await cleanupOldGenerations(supabase);
+
+    // 9. 통계 업데이트 (생성 횟수 증가) - region_id를 null로 처리
+    const today = new Date().toISOString().split('T')[0];
+    const { data: existingStat } = await supabase
+      .from('statistics')
+      .select('*')
+      .eq('date', today)
+      .is('region_id', null)
+      .single();
+
+    if (existingStat) {
+      await supabase
+        .from('statistics')
+        .update({ generation_count: existingStat.generation_count + 1 })
+        .eq('id', existingStat.id);
+    } else {
+      await supabase
+        .from('statistics')
+        .insert({
+          date: today,
+          region_id: null,
+          generation_count: 1,
+          download_count: 0,
+        });
+    }
+
+    return NextResponse.json({
+      success: true,
+      jobId,
+      filePath: fileName,
+    });
+  } catch (error) {
+    console.error('PPT generation error:', error);
+    return NextResponse.json(
+      { error: 'PPT 생성 중 오류가 발생했습니다.', details: error instanceof Error ? error.message : String(error) },
+      { status: 500 }
+    );
+  }
+}
+
+/**
+ * 생성 상태 조회 API
+ * GET /api/generate?jobId=xxx
+ */
+export async function GET(request: NextRequest) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const jobId = searchParams.get('jobId');
+
+    console.log('[GET /api/generate] JobId received:', jobId);
+
+    if (!jobId) {
+      return NextResponse.json(
+        { error: 'jobId가 필요합니다.' },
+        { status: 400 }
+      );
+    }
+
+    const supabase = createServerClient();
+
+    const { data, error } = await supabase
+      .from('generation_requests')
+      .select('*')
+      .eq('id', jobId)
+      .single();
+
+    console.log('[GET /api/generate] Query result:', { data, error });
+
+    if (error || !data) {
+      console.error('[GET /api/generate] Record not found:', error);
+      return NextResponse.json(
+        { error: '생성 작업을 찾을 수 없습니다.' },
+        { status: 404 }
+      );
+    }
+
+    // 상태에 따라 진행률 반환
+    let progress = {
+      status: data.status,
+      progress: data.status === 'completed' ? 100 : data.status === 'failed' ? 0 : 50,
+      currentStep: data.status === 'completed' ? '생성 완료' : data.status === 'failed' ? '생성 실패' : '생성 중...',
+      estimatedTimeRemaining: data.status === 'completed' ? 0 : 2,
+    };
+
+    return NextResponse.json(progress);
+  } catch (error) {
+    console.error('Status check error:', error);
+    return NextResponse.json(
+      { error: '상태 조회 중 오류가 발생했습니다.' },
+      { status: 500 }
+    );
+  }
+}
