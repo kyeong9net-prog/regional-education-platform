@@ -606,8 +606,11 @@ export async function POST(request: NextRequest) {
       .single();
 
     if (templateError || !template) {
+      console.error('[Dynamic PPTX] Template query error:', templateError);
+      console.error('[Dynamic PPTX] Template ID searched:', templateId);
+      console.error('[Dynamic PPTX] Template data:', template);
       return NextResponse.json(
-        { error: '템플릿을 찾을 수 없습니다.' },
+        { error: '템플릿을 찾을 수 없습니다.', details: templateError?.message, templateId },
         { status: 404 }
       );
     }
