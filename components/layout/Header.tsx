@@ -31,7 +31,7 @@ export default function Header() {
               }`}
               aria-current={!isAdminMode ? 'page' : undefined}
             >
-              자료생성
+              자료 생성 모드
             </Link>
             <Link
               href="/admin/templates"
