@@ -68,7 +68,7 @@ export default function HomePage() {
         <footer className="mt-24 pt-8 border-t border-gray-200">
           <div className="text-center text-gray-600">
             <p className="text-sm">
-              © 2024 <span className="font-semibold text-gray-900">hyunneey</span>. All rights reserved.
+              © 2025 <span className="font-semibold text-gray-900">hyunneey</span>. All rights reserved.
             </p>
             <p className="text-xs mt-2 text-gray-500">
               Regional Education Platform
