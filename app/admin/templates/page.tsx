@@ -59,7 +59,7 @@ export default function AdminTemplatesPage() {
       setLoading(true);
       const response = await fetch('/api/admin/templates', {
         headers: {
-          'x-admin-secret': adminSecret,
+          'x-admin-secret': adminSecret || '',
         },
       });
 
@@ -121,7 +121,7 @@ export default function AdminTemplatesPage() {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-secret': adminSecret,
+          'x-admin-secret': adminSecret || '',
         },
         body: JSON.stringify({
           title,
@@ -221,7 +221,7 @@ export default function AdminTemplatesPage() {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
-          'x-admin-secret': adminSecret,
+          'x-admin-secret': adminSecret || '',
         },
         body: JSON.stringify({
           title: editTitle,
@@ -296,7 +296,7 @@ export default function AdminTemplatesPage() {
             method: 'PUT',
             headers: {
               'Content-Type': 'application/json',
-              'x-admin-secret': adminSecret,
+              'x-admin-secret': adminSecret || '',
             },
             body: JSON.stringify({
               title: template.title,
@@ -333,7 +333,7 @@ export default function AdminTemplatesPage() {
       const response = await fetch(`/api/admin/templates?id=${templateId}`, {
         method: 'DELETE',
         headers: {
-          'x-admin-secret': adminSecret,
+          'x-admin-secret': adminSecret || '',
         },
       });
 
